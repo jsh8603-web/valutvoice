@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, user-scalable=no">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="VaultVoice">
+  <meta name="theme-color" content="#007AFF">
+  <link rel="manifest" href="/manifest.json">
+  <link rel="apple-touch-icon" href="/icons/icon-192.png">
+  <link rel="stylesheet" href="/app.css">
+  <title>VaultVoice</title>
+</head>
+<body>
+
+  <!-- Auth Screen -->
+  <div id="auth-screen" class="screen">
+    <div class="auth-container">
+      <div class="auth-icon">🔐</div>
+      <h1>VaultVoice</h1>
+      <p>API 키를 입력하세요</p>
+      <input type="password" id="auth-input" placeholder="API Key" autocomplete="off">
+      <button id="auth-btn" class="btn-primary">연결</button>
+      <p id="auth-error" class="error-text" hidden></p>
+    </div>
+  </div>
+
+  <!-- Main App -->
+  <div id="app" hidden>
+    <!-- Header -->
+    <header id="app-header">
+      <h1 id="header-title">메모</h1>
+      <div id="header-right"></div>
+    </header>
+
+    <!-- Tab Content -->
+    <main id="tab-content">
+
+      <!-- Tab: Memo -->
+      <section id="tab-memo" class="tab-panel active">
+        <div class="date-nav">
+          <button id="date-prev" class="btn-icon">&lsaquo;</button>
+          <button id="date-display" class="date-btn">오늘</button>
+          <button id="date-next" class="btn-icon">&rsaquo;</button>
+        </div>
+
+        <div class="form-group">
+          <label>섹션</label>
+          <div class="section-selector">
+            <button class="section-chip active" data-section="메모">메모</button>
+            <button class="section-chip" data-section="오늘할일">오늘할일</button>
+            <button class="section-chip" data-section="오늘 회고">오늘 회고</button>
+            <button class="section-chip" data-section="custom">직접입력</button>
+          </div>
+          <input type="text" id="custom-section" class="input" placeholder="섹션명 입력" hidden>
+        </div>
+
+        <div class="form-group">
+          <label>내용</label>
+          <textarea id="memo-input" class="input memo-textarea" placeholder="여기를 탭하고 키보드 🎙️ 버튼으로 음성 입력..." rows="6"></textarea>
+        </div>
+
+        <div class="form-group">
+          <label>태그</label>
+          <div class="tag-input-wrap">
+            <div id="tag-list" class="tag-list"></div>
+            <input type="text" id="tag-input" class="input tag-input" placeholder="태그 추가 (Enter)">
+            <div id="tag-suggestions" class="tag-suggestions" hidden></div>
+          </div>
+        </div>
+
+        <button id="save-btn" class="btn-primary btn-save">저장</button>
+        <div id="save-feedback" class="save-feedback" hidden></div>
+      </section>
+
+      <!-- Tab: Today -->
+      <section id="tab-today" class="tab-panel">
+        <div class="date-nav">
+          <button id="today-prev" class="btn-icon">&lsaquo;</button>
+          <button id="today-date" class="date-btn">오늘</button>
+          <button id="today-next" class="btn-icon">&rsaquo;</button>
+        </div>
+        <div id="today-content" class="note-content">
+          <div class="empty-state">오늘 일일노트가 없습니다</div>
+        </div>
+      </section>
+
+      <!-- Tab: History -->
+      <section id="tab-history" class="tab-panel">
+        <div class="search-bar">
+          <input type="search" id="history-search" class="input" placeholder="검색...">
+        </div>
+        <div id="history-list" class="history-list">
+          <div class="empty-state">기록을 불러오는 중...</div>
+        </div>
+        <div id="history-preview" class="history-preview" hidden>
+          <button id="preview-close" class="btn-icon preview-close">&times;</button>
+          <div id="preview-content"></div>
+        </div>
+      </section>
+
+      <!-- Tab: Settings -->
+      <section id="tab-settings" class="tab-panel">
+        <div class="settings-group">
+          <h2>서버 연결</h2>
+          <div class="setting-row">
+            <span>상태</span>
+            <span id="conn-status" class="status-badge">확인중...</span>
+          </div>
+          <div class="setting-row">
+            <span>볼트 경로</span>
+            <span id="vault-path" class="setting-value">-</span>
+          </div>
+        </div>
+
+        <div class="settings-group">
+          <h2>기본 섹션</h2>
+          <select id="default-section" class="input">
+            <option value="메모">메모</option>
+            <option value="오늘할일">오늘할일</option>
+            <option value="오늘 회고">오늘 회고</option>
+          </select>
+        </div>
+
+        <div class="settings-group">
+          <h2>즐겨찾기 태그</h2>
+          <div id="fav-tags" class="tag-list"></div>
+          <div class="setting-row">
+            <input type="text" id="fav-tag-input" class="input" placeholder="태그 추가">
+            <button id="fav-tag-add" class="btn-small">추가</button>
+          </div>
+        </div>
+
+        <div class="settings-group">
+          <button id="logout-btn" class="btn-danger">로그아웃</button>
+        </div>
+
+        <div class="app-version">VaultVoice v1.0</div>
+      </section>
+
+    </main>
+
+    <!-- Tab Bar -->
+    <nav id="tab-bar">
+      <button class="tab-item active" data-tab="memo">
+        <span class="tab-icon">&#9998;</span>
+        <span class="tab-label">메모</span>
+      </button>
+      <button class="tab-item" data-tab="today">
+        <span class="tab-icon">&#128203;</span>
+        <span class="tab-label">오늘</span>
+      </button>
+      <button class="tab-item" data-tab="history">
+        <span class="tab-icon">&#128218;</span>
+        <span class="tab-label">기록</span>
+      </button>
+      <button class="tab-item" data-tab="settings">
+        <span class="tab-icon">&#9881;</span>
+        <span class="tab-label">설정</span>
+      </button>
+    </nav>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>
