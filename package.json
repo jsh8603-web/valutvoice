@@ -1,6 +1,6 @@
 {
   "name": "vaultvoice",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "description": "iPhone Voice Memo → Obsidian Daily Note PWA",
   "main": "server.js",
   "scripts": {
@@ -9,6 +9,9 @@
   },
   "dependencies": {
     "express": "^4.21.0",
-    "dotenv": "^16.4.0"
+    "dotenv": "^16.4.0",
+    "multer": "^1.4.5-lts.1",
+    "uuid": "^9.0.0",
+    "node-fetch": "^2.7.0"
   }
 }

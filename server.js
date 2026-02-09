@@ -2,12 +2,19 @@ require('dotenv').config();
 const express = require('express');
 const fs = require('fs');
 const path = require('path');
+const multer = require('multer');
+const { v4: uuidv4 } = require('uuid');
+const fetch = require('node-fetch');
 
 const app = express();
 const PORT = process.env.PORT || 3939;
 const VAULT_PATH = process.env.VAULT_PATH;
 const API_KEY = process.env.API_KEY;
 const DAILY_DIR = path.join(VAULT_PATH, '10.Daily Notes');
+const ATTACHMENT_DIR_NAME = process.env.ATTACHMENT_DIR || '99.Attachments';
+const ATTACHMENT_DIR = path.join(VAULT_PATH, ATTACHMENT_DIR_NAME);
+const MAX_UPLOAD_SIZE = parseInt(process.env.MAX_UPLOAD_SIZE || '10') * 1024 * 1024; // MB to bytes
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
 
 app.use(express.json());
 
@@ -35,7 +42,99 @@ app.use('/api', (req, res, next) => {
   auth(req, res, next);
 });
 
+// ---- Multer setup for image upload ----
+if (!fs.existsSync(ATTACHMENT_DIR)) {
+  fs.mkdirSync(ATTACHMENT_DIR, { recursive: true });
+}
+
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => cb(null, ATTACHMENT_DIR),
+  filename: (req, file, cb) => {
+    const ts = Math.floor(Date.now() / 1000);
+    const short = uuidv4().split('-')[0];
+    const ext = path.extname(file.originalname).toLowerCase() || '.jpg';
+    cb(null, `vv-${ts}-${short}${ext}`);
+  }
+});
+const upload = multer({
+  storage,
+  limits: { fileSize: MAX_UPLOAD_SIZE },
+  fileFilter: (req, file, cb) => {
+    if (file.mimetype.startsWith('image/')) cb(null, true);
+    else cb(new Error('Only image files allowed'));
+  }
+});
+
+// ============================================================
+// Clipboard sync (PC ↔ iPhone)
+// ============================================================
+let sharedClipboard = { text: '', updatedAt: 0 };
+
+app.get('/api/clipboard', (req, res) => {
+  res.json(sharedClipboard);
+});
+
+app.post('/api/clipboard', (req, res) => {
+  const { text } = req.body;
+  if (text === undefined) return res.status(400).json({ error: 'text required' });
+  sharedClipboard = { text, updatedAt: Date.now() };
+  res.json({ success: true });
+});
+
+// ============================================================
+// Feature test endpoint
+// ============================================================
+app.get('/api/test', async (req, res) => {
+  const results = {};
+
+  // 1. Server health
+  results.server = { ok: true, port: PORT };
+
+  // 2. Vault access
+  results.vault = { ok: fs.existsSync(VAULT_PATH), path: VAULT_PATH };
+
+  // 3. Daily dir
+  results.dailyDir = { ok: fs.existsSync(DAILY_DIR) };
+
+  // 4. Attachment dir
+  results.attachmentDir = { ok: fs.existsSync(ATTACHMENT_DIR), path: ATTACHMENT_DIR };
+
+  // 5. Gemini API
+  if (GEMINI_API_KEY && GEMINI_API_KEY !== 'your_key_here') {
+    try {
+      const testRes = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_API_KEY}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            contents: [{ parts: [{ text: 'hello' }] }],
+            generationConfig: { maxOutputTokens: 10 }
+          })
+        }
+      );
+      results.gemini = { ok: testRes.ok, status: testRes.status };
+    } catch (e) {
+      results.gemini = { ok: false, error: e.message };
+    }
+  } else {
+    results.gemini = { ok: false, error: 'API key not set' };
+  }
+
+  // 6. Recent notes count
+  if (fs.existsSync(DAILY_DIR)) {
+    const files = fs.readdirSync(DAILY_DIR).filter(f => f.endsWith('.md'));
+    results.notes = { ok: true, count: files.length };
+  } else {
+    results.notes = { ok: false, count: 0 };
+  }
+
+  res.json(results);
+});
+
+// ============================================================
 // Health check
+// ============================================================
 app.get('/api/health', (req, res) => {
   const vaultExists = fs.existsSync(VAULT_PATH);
   const dailyExists = fs.existsSync(DAILY_DIR);
@@ -47,7 +146,9 @@ app.get('/api/health', (req, res) => {
   });
 });
 
+// ============================================================
 // Get daily note
+// ============================================================
 app.get('/api/daily/:date', (req, res) => {
   const { date } = req.params;
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
@@ -64,14 +165,16 @@ app.get('/api/daily/:date', (req, res) => {
   res.json({ date, frontmatter, body, raw: content });
 });
 
+// ============================================================
 // Create or update daily note
+// ============================================================
 app.post('/api/daily/:date', (req, res) => {
   const { date } = req.params;
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
     return res.status(400).json({ error: 'Invalid date format. Use YYYY-MM-DD' });
   }
 
-  const { content, tags = [], section = '메모' } = req.body;
+  const { content, tags = [], section = '메모', images = [], priority, due } = req.body;
   if (!content || !content.trim()) {
     return res.status(400).json({ error: 'Content is required' });
   }
@@ -83,7 +186,24 @@ app.post('/api/daily/:date', (req, res) => {
 
   const filePath = path.join(DAILY_DIR, `${date}.md`);
   const timestamp = new Date().toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' });
-  const newEntry = `- ${content.trim()} *(${timestamp})*`;
+
+  let newEntry;
+  if (section === '오늘할일') {
+    // Todo format with Dataview-compatible inline metadata
+    let meta = '';
+    if (priority) meta += ` [priority::${priority}]`;
+    if (due) meta += ` [due::${due}]`;
+    newEntry = `- [ ] ${content.trim()}${meta}`;
+  } else {
+    newEntry = `- ${content.trim()} *(${timestamp})*`;
+  }
+
+  // Add image sub-items
+  if (images && images.length > 0) {
+    for (const img of images) {
+      newEntry += `\n  - ![[${ATTACHMENT_DIR_NAME}/${img}]]`;
+    }
+  }
 
   let result;
   if (fs.existsSync(filePath)) {
@@ -95,7 +215,199 @@ app.post('/api/daily/:date', (req, res) => {
   res.json({ success: true, date, section, ...result });
 });
 
+// ============================================================
+// Image upload
+// ============================================================
+app.post('/api/upload', (req, res, next) => {
+  console.log('[UPLOAD] Request received, content-type:', req.headers['content-type']);
+  upload.single('image')(req, res, (err) => {
+    if (err) {
+      console.error('[UPLOAD] Multer error:', err.message);
+      return res.status(400).json({ error: err.message });
+    }
+    if (!req.file) {
+      console.error('[UPLOAD] No file in request');
+      return res.status(400).json({ error: 'No image file provided' });
+    }
+    console.log('[UPLOAD] Success:', req.file.filename, req.file.size, 'bytes');
+    res.json({
+      success: true,
+      filename: req.file.filename,
+      path: `${ATTACHMENT_DIR_NAME}/${req.file.filename}`
+    });
+  });
+});
+
+// ============================================================
+// Serve attachment images
+// ============================================================
+app.get('/api/attachments/:filename', (req, res) => {
+  const filename = req.params.filename;
+  // Security: prevent path traversal
+  if (filename.includes('..') || filename.includes('/') || filename.includes('\\')) {
+    return res.status(400).json({ error: 'Invalid filename' });
+  }
+  const filePath = path.join(ATTACHMENT_DIR, filename);
+  if (!fs.existsSync(filePath)) {
+    return res.status(404).json({ error: 'File not found' });
+  }
+  res.sendFile(filePath);
+});
+
+// ============================================================
+// Get todos from daily note
+// ============================================================
+app.get('/api/daily/:date/todos', (req, res) => {
+  const { date } = req.params;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    return res.status(400).json({ error: 'Invalid date format' });
+  }
+
+  const filePath = path.join(DAILY_DIR, `${date}.md`);
+  if (!fs.existsSync(filePath)) {
+    return res.json({ todos: [] });
+  }
+
+  const content = fs.readFileSync(filePath, 'utf-8');
+  const lines = content.split('\n');
+  const todos = [];
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const todoMatch = line.match(/^- \[([ x])\] (.+)$/);
+    if (todoMatch) {
+      const done = todoMatch[1] === 'x';
+      let text = todoMatch[2];
+
+      // Parse inline metadata
+      let priority = null;
+      let due = null;
+      const priorityMatch = text.match(/\[priority::([^\]]+)\]/);
+      const dueMatch = text.match(/\[due::([^\]]+)\]/);
+      if (priorityMatch) {
+        priority = priorityMatch[1];
+        text = text.replace(priorityMatch[0], '').trim();
+      }
+      if (dueMatch) {
+        due = dueMatch[1];
+        text = text.replace(dueMatch[0], '').trim();
+      }
+
+      todos.push({ lineIndex: i, done, text, priority, due });
+    }
+  }
+
+  res.json({ todos });
+});
+
+// ============================================================
+// Toggle todo checkbox
+// ============================================================
+app.post('/api/todo/toggle', (req, res) => {
+  const { date, lineIndex } = req.body;
+  if (!date || lineIndex === undefined) {
+    return res.status(400).json({ error: 'date and lineIndex are required' });
+  }
+
+  const filePath = path.join(DAILY_DIR, `${date}.md`);
+  if (!fs.existsSync(filePath)) {
+    return res.status(404).json({ error: 'Note not found' });
+  }
+
+  const content = fs.readFileSync(filePath, 'utf-8');
+  const lines = content.split('\n');
+
+  if (lineIndex < 0 || lineIndex >= lines.length) {
+    return res.status(400).json({ error: 'Invalid line index' });
+  }
+
+  const line = lines[lineIndex];
+  if (line.match(/^- \[ \] /)) {
+    lines[lineIndex] = line.replace('- [ ] ', '- [x] ');
+  } else if (line.match(/^- \[x\] /)) {
+    lines[lineIndex] = line.replace('- [x] ', '- [ ] ');
+  } else {
+    return res.status(400).json({ error: 'Line is not a todo item' });
+  }
+
+  fs.writeFileSync(filePath, lines.join('\n'), 'utf-8');
+  res.json({ success: true, toggled: lineIndex });
+});
+
+// ============================================================
+// AI Summarize (Gemini proxy)
+// ============================================================
+app.post('/api/ai/summarize', async (req, res) => {
+  const { action, content, date } = req.body;
+
+  if (!GEMINI_API_KEY || GEMINI_API_KEY === 'your_key_here') {
+    return res.status(503).json({ error: 'Gemini API key not configured' });
+  }
+
+  if (!content) {
+    return res.status(400).json({ error: 'Content is required' });
+  }
+
+  let prompt;
+  if (action === 'summarize') {
+    prompt = `다음은 ${date || '오늘'}의 일일노트 내용입니다. 3~5문장으로 한국어로 핵심을 요약해주세요. 마크다운 없이 일반 텍스트로 답변하세요.\n\n${content}`;
+  } else if (action === 'suggest-tags') {
+    prompt = `다음 일일노트 내용을 분석해서 적절한 태그를 5~10개 추천해주세요. JSON 배열 형태로만 답변하세요 (예: ["태그1", "태그2"]). 설명 없이 JSON만 출력하세요.\n\n${content}`;
+  } else if (action === 'categorize') {
+    prompt = `다음 일일노트 내용을 주제별로 분류해주세요. 각 주제에 관련 메모를 그룹화하고 한국어로 간결하게 정리해주세요. 마크다운 없이 일반 텍스트로 답변하세요.\n\n${content}`;
+  } else {
+    return res.status(400).json({ error: 'Invalid action' });
+  }
+
+  try {
+    const geminiRes = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_API_KEY}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: prompt }] }],
+          generationConfig: {
+            temperature: 0.7,
+            maxOutputTokens: 1024
+          }
+        })
+      }
+    );
+
+    if (!geminiRes.ok) {
+      const err = await geminiRes.text();
+      console.error('Gemini API error:', err);
+      return res.status(502).json({ error: 'Gemini API error' });
+    }
+
+    const data = await geminiRes.json();
+    const text = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+
+    let result = text.trim();
+    // For suggest-tags, try to parse as JSON
+    if (action === 'suggest-tags') {
+      try {
+        // Extract JSON array from response if wrapped in text
+        const jsonMatch = result.match(/\[[\s\S]*\]/);
+        if (jsonMatch) {
+          result = JSON.parse(jsonMatch[0]);
+        }
+      } catch (e) {
+        // Return as-is if parsing fails
+      }
+    }
+
+    res.json({ success: true, action, result });
+  } catch (e) {
+    console.error('Gemini proxy error:', e);
+    res.status(500).json({ error: 'AI request failed: ' + e.message });
+  }
+});
+
+// ============================================================
 // Get tag list (frequency sorted)
+// ============================================================
 app.get('/api/tags', (req, res) => {
   const tagCount = {};
 
@@ -104,7 +416,6 @@ app.get('/api/tags', (req, res) => {
   }
 
   const files = fs.readdirSync(DAILY_DIR).filter(f => f.endsWith('.md'));
-  // Scan last 30 files max for performance
   const recent = files.sort().reverse().slice(0, 30);
 
   for (const file of recent) {
@@ -124,7 +435,9 @@ app.get('/api/tags', (req, res) => {
   res.json({ tags });
 });
 
+// ============================================================
 // Recent notes (last 7 days)
+// ============================================================
 app.get('/api/notes/recent', (req, res) => {
   if (!fs.existsSync(DAILY_DIR)) {
     return res.json({ notes: [] });
@@ -146,8 +459,9 @@ app.get('/api/notes/recent', (req, res) => {
   res.json({ notes });
 });
 
-// --- Helpers ---
-
+// ============================================================
+// Helpers
+// ============================================================
 function parseFrontmatter(content) {
   const match = content.match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/);
   if (!match) return { frontmatter: {}, body: content };
@@ -207,7 +521,10 @@ function createNewNote(filePath, date, section, entry, tags) {
 
   let body = `\n# ${date} (${dayName})\n\n`;
 
-  if (section !== '오늘 회고') {
+  if (section === '오늘할일') {
+    body += `## 오늘할일\n\n${entry}\n\n`;
+    body += `## 오늘 회고\n\n`;
+  } else if (section !== '오늘 회고') {
     body += `## ${section}\n\n${entry}\n\n`;
     body += `## 오늘 회고\n\n`;
   } else {
@@ -234,20 +551,16 @@ function appendToExisting(filePath, section, entry, tags) {
 
   let newBody;
   if (sectionIdx !== -1) {
-    // Find end of section (next ## or end of file)
     const afterHeader = sectionIdx + sectionHeader.length;
     const nextSection = body.indexOf('\n## ', afterHeader);
     if (nextSection !== -1) {
-      // Insert before next section
       const beforeNext = body.substring(0, nextSection);
       const afterNext = body.substring(nextSection);
       newBody = beforeNext.trimEnd() + '\n' + entry + '\n\n' + afterNext.trimStart();
     } else {
-      // Append to end of section (end of file)
       newBody = body.trimEnd() + '\n' + entry + '\n\n';
     }
   } else {
-    // Section doesn't exist - insert before "## 오늘 회고" or at end
     const reviewIdx = body.indexOf('## 오늘 회고');
     if (reviewIdx !== -1) {
       const before = body.substring(0, reviewIdx);
@@ -263,16 +576,23 @@ function appendToExisting(filePath, section, entry, tags) {
   return { updated: true, tagsAdded: tags.filter(t => !existingTags.includes(t)) };
 }
 
+// ============================================================
 // SPA fallback
+// ============================================================
 app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
+// ============================================================
+// Start server
+// ============================================================
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(`\n  VaultVoice server running`);
+  console.log(`\n  VaultVoice v2.0 server running`);
   console.log(`  Local:   http://localhost:${PORT}`);
   console.log(`  Vault:   ${VAULT_PATH}`);
-  console.log(`  API Key: ${API_KEY}\n`);
+  console.log(`  API Key: ${API_KEY}`);
+  console.log(`  Gemini:  ${GEMINI_API_KEY && GEMINI_API_KEY !== 'your_key_here' ? 'configured' : 'not configured'}`);
+  console.log(`  Uploads: ${ATTACHMENT_DIR}\n`);
 
   // Show LAN IP
   const os = require('os');
