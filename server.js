@@ -10,7 +10,7 @@ const app = express();
 const PORT = process.env.PORT || 3939;
 const VAULT_PATH = process.env.VAULT_PATH;
 const API_KEY = process.env.API_KEY;
-const DAILY_DIR = path.join(VAULT_PATH, '10.Daily Notes');
+const DAILY_DIR = path.join(VAULT_PATH, '02. Areas/Daily Notes');
 const ATTACHMENT_DIR_NAME = process.env.ATTACHMENT_DIR || '99.Attachments';
 const ATTACHMENT_DIR = path.join(VAULT_PATH, ATTACHMENT_DIR_NAME);
 
