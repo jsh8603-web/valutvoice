@@ -4,3 +4,7 @@ node_modules/
 API key.md
 .cloudflared/
 nul
+playwright-report/
+test-results/
+tests/.auth/
+tests/.server-pid
